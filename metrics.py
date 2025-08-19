@@ -21,8 +21,8 @@ def mclust_R(x, n_clusters, model='EEE', random_seed=2020):
     Clustering using the mclust algorithm.
     The parameters are the same as those in the R package mclust.
     """
-    os.environ['R_HOME'] = '/GPUFS/sysu_ydyang_10/.conda/envs/r-base/lib/R'
-    os.environ['R_USER'] = '/GPUFS/sysu_ydyang_10/.conda/envs/r-base/lib/python3.9/site-packages/rpy2'
+    os.environ['R_HOME'] = '/data/project/minho/anaconda3/envs/clast39/lib/R'
+    os.environ['R_USER'] = '/data/project/minho/anaconda3/envs/clast39/lib/python3.9/site-packages/rpy2'
 
     np.random.seed(random_seed)
     import rpy2.robjects as robjects
