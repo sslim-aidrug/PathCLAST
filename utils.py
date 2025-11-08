@@ -32,9 +32,10 @@ def load_ST_file(file_fold, count_file='filtered_feature_bc_matrix.h5', load_ima
         adata_h5.obs = adata_h5.obs.join(positions, how="left")
         adata_h5.obsm['spatial'] = adata_h5.obs[['pxl_row_in_fullres', 'pxl_col_in_fullres']].to_numpy()
         adata_h5.obs.drop(columns=['barcode', 'pxl_row_in_fullres', 'pxl_col_in_fullres'], inplace=True)
-        sc.pp.normalize_total(adata_h5, target_sum=1e4)
-        sc.pp.log1p(adata_h5)
-        sc.pp.scale(adata_h5, zero_center=True, max_value=None)
+    sc.pp.filter_genes(adata_h5, min_cells=50)
+    sc.pp.filter_genes(adata_h5, min_counts=10)
+    sc.pp.normalize_total(adata_h5, target_sum=1e4)
+    sc.pp.log1p(adata_h5)
     return adata_h5
 
 
@@ -82,6 +83,7 @@ def build_her2st_data(path, name, size=112):
     patches = np.array(patches)
     
     return adata, patches
+
 
 @numba.njit("f4(f4[:], f4[:])")
 def euclid_dist(t1,t2):
@@ -138,27 +140,34 @@ def calculate_adj_matrix(x, y, x_pixel=None, y_pixel=None, image=None, beta=49, 
 
 def refine(sample_id, pred, dis, num_nbs):
     refined_pred=[]
-    pred=pd.DataFrame({"pred": pred}, index=sample_id)
-    dis_df=pd.DataFrame(dis, index=sample_id, columns=sample_id)
+    pred_df = pd.DataFrame({"pred": pred}, index=sample_id)
+    dis_df = pd.DataFrame(dis, index=sample_id, columns=sample_id)
     for i in range(len(sample_id)):
-        index=sample_id[i]
-        dis_tmp=dis_df.loc[index, :].sort_values()
-        nbs=dis_tmp[0:num_nbs+1]
-        nbs_pred=pred.loc[nbs.index, "pred"]
-        self_pred=pred.loc[index, "pred"]
-        v_c=nbs_pred.value_counts()
-        if (v_c.loc[self_pred]<num_nbs/2) and (np.max(v_c)>num_nbs/2):
+        index = sample_id[i]
+        dis_tmp = dis_df.loc[index, :].sort_values()
+        nbs = dis_tmp[0:num_nbs+1]
+        nbs_pred = pred_df.loc[nbs.index, "pred"]
+        self_pred = pred_df.loc[index, "pred"]
+        v_c = nbs_pred.value_counts()
+        
+        if self_pred not in v_c:
+            refined_pred.append(v_c.idxmax())
+            continue
+        
+        if (v_c.loc[self_pred] < num_nbs/2) and (np.max(v_c) > num_nbs/2):
             refined_pred.append(v_c.idxmax())
         else:           
             refined_pred.append(self_pred)
     return refined_pred
 
+
+
 def get_predicted_results(dataset, name, path, z):
 
-    if dataset=="DLPFC":
+    if dataset=="SpatialLIBD":
         adata = load_ST_file(os.path.join(path, name))
         df_meta = pd.read_csv(os.path.join(path, name, 'metadata.tsv'), sep='\t')
-        label = pd.Categorical(df_meta['ground_truth']).codes
+        label = pd.Categorical(df_meta['layer_guess']).codes
         n_clusters = label.max() + 1
         adata = adata[label != -1]
 
@@ -203,6 +212,29 @@ def get_predicted_results(dataset, name, path, z):
         df_meta = pd.read_csv(os.path.join(path, name, 'metadata.tsv'), sep='\t')
         # label = pd.Categorical(df_meta['ground_truth']).codes
         label = pd.Categorical(df_meta['annot_type']).codes
+        n_clusters = label.max() + 1
+        adata = adata[label != -1]
+
+        adj_2d = calculate_adj_matrix(x=adata.obs["array_row"].tolist(), y=adata.obs["array_col"].tolist(),
+                                      histology=False)
+
+        raw_preds = eval_mclust_ari(label[label != -1], z, n_clusters)
+
+        if len(adata.obs)> 1000:
+            num_nbs = 24
+        else:
+            num_nbs = 4
+
+        refined_preds = refine(sample_id=adata.obs.index.tolist(), pred=raw_preds, dis=adj_2d, num_nbs=num_nbs)
+        ari = adjusted_rand_score(label[label != -1], refined_preds)
+
+        return ari, refined_preds
+    
+    elif dataset=="MBA":
+        adata = load_ST_file(os.path.join(path, name))
+        df_meta = pd.read_csv(os.path.join(path, name, 'metadata.tsv'), sep='\t')
+        label = pd.Categorical(df_meta['ground_truth']).codes
+        # label = pd.Categorical(df_meta['annot_type']).codes
         n_clusters = label.max() + 1
         adata = adata[label != -1]
 

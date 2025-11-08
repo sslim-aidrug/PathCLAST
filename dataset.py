@@ -1,126 +1,102 @@
 import os
-from copy import deepcopy
-
 import numpy as np
 import pandas as pd
-import cv2
-import networkx as nx
-from scipy.sparse import issparse
 import torch
 from torch import nn
 from torch.utils import data
 from torch_geometric.data import Data
+from scipy.sparse import issparse
 from torchvision import transforms
 from torchtoolbox.transform import Cutout
+import cv2
+import scanpy as sc
 
 from utils import load_ST_file, build_her2st_data
 
 
 class PathwayProcessor:
     """
-    Build and update pathway graphs with per-gene expression
+    Optimized pathway processor using index-based approach.
+    Pre-computes pathway gene indices and edge structures for fast runtime access.
     """
+    def __init__(self, csv_file, all_genes_list):
+        df = pd.read_csv(csv_file)
+        df = df[df['EdgeInfo'].notnull()]
 
-    def __init__(self, csv_file):
-        """
+        # Create gene name to index mapping
+        self.all_genes_map = {gene: i for i, gene in enumerate(all_genes_list)}
 
-        pathway CSV containing columns:
-        ['PathwayID','NodeInfo','EdgeInfo']
-        """
-        self.prebuilt_graphs = {}
-        self.df = pd.read_csv(csv_file)
-        self.df = self.df[self.df['EdgeInfo'].notnull()]
-        
-    def create_static_pathway_graphs(self):
-        """
-        Parse CSV rows and create one static NetworkX graph per pathway.
-        """
-        graphs = {}
+        self.pathway_ids = []
+        self.pathway_gene_indices = []  # Each pathway as list of gene indices
+        self.pathway_edge_indices = []  # Pre-computed edge_index tensors
 
-        for pid, grp in self.df.groupby('PathwayID'):
-            G = nx.Graph()
+        print("Pre-computing pathway structures...")
+        for _, row in df.iterrows():
+            pathway_id = row['PathwayID']
+            self.pathway_ids.append(pathway_id)
 
-            # nodes
-            node_info = str(grp['NodeInfo'].iloc[0])
-            nodes = [n.strip() for n in node_info.split(';') if n.strip()]
-            G.add_nodes_from(nodes)
+            # Parse nodes and convert to indices
+            nodes = [node.strip() for node in row['NodeInfo'].split(';')]
+            gene_indices = [self.all_genes_map[gene] for gene in nodes if gene in self.all_genes_map]
+            self.pathway_gene_indices.append(gene_indices)
 
-            # edges
-            edge_info = str(grp['EdgeInfo'].iloc[0])
-            edges = []
-            for e in edge_info.split(';'):
-                e = e.strip()
-                if not e:
-                    continue
-                e = e.strip('()')
-                parts = [p.strip() for p in e.split(',')]
-                if len(parts) == 2 and parts[0] and parts[1]:
-                    edges.append((parts[0], parts[1]))
-            if edges:
-                G.add_edges_from(edges)
+            # Parse edges and build edge_index
+            edge_info = row['EdgeInfo']
+            if pd.notna(edge_info) and len(gene_indices) > 0:
+                # Create node to local index mapping for this pathway
+                # IMPORTANT: Only assign indices to genes that exist in all_genes_map
+                valid_nodes = [gene for gene in nodes if gene in self.all_genes_map]
+                node_to_local_idx = {gene: idx for idx, gene in enumerate(valid_nodes)}
 
-            graphs[pid] = G
+                edges = []
+                for edge in edge_info.split(';'):
+                    if edge.strip():
+                        try:
+                            # Parse edge format: "(gene1, gene2)"
+                            edge_clean = edge.strip('() ')
+                            src, dst = edge_clean.split(',')
+                            src, dst = src.strip(), dst.strip()
 
-        self.prebuilt_graphs = graphs
-        print(f"Total pathways: {len(self.prebuilt_graphs)}")
+                            if src in node_to_local_idx and dst in node_to_local_idx:
+                                edges.append([node_to_local_idx[src], node_to_local_idx[dst]])
+                        except:
+                            continue
 
-    def update_graph_with_expression(self, sPathID, expression_data_matrix, symbol_to_index):
-        """
-        Attach per-gene expression to nodes in a copied pathway graph
-        return: nx.Graph with node['expression_data'] = np.ndarray(shape=(1,)
-        """
-        if sPathID not in self.prebuilt_graphs:
-            return None
-
-        G = deepcopy(self.prebuilt_graphs[sPathID])
-
-        pathway_genes = [node for node in G.nodes() if node in symbol_to_index]
-        if len(pathway_genes) == 0:
-            return None  # or handle the empty case appropriately
-
-        pathway_expression_data = expression_data_matrix[:, [symbol_to_index[gene] for gene in pathway_genes]]
-
-        for node in G.nodes():
-            gene_symbol = node  
-            if gene_symbol in symbol_to_index:
-                idx = pathway_genes.index(gene_symbol)
-                expression_data = pathway_expression_data[:, idx]
-                G.nodes[node]['expression_data'] = expression_data
+                if edges:
+                    edge_index = torch.tensor(edges, dtype=torch.long).t().contiguous()
+                else:
+                    # No valid edges, create empty edge_index
+                    edge_index = torch.empty((2, 0), dtype=torch.long)
             else:
-                G.nodes[node]['expression_data'] = np.zeros(expression_data_matrix.shape[0], dtype=np.float32)
+                # No edges or no valid genes
+                edge_index = torch.empty((2, 0), dtype=torch.long)
 
-        return G
-            
+            self.pathway_edge_indices.append(edge_index)
+
+        print(f"Pre-computed {len(self.pathway_ids)} pathways")
+
+    def get_num_pathways(self):
+        return len(self.pathway_ids)
+
 
 class Dataset(data.Dataset):
-    """
-    Bi-modal ST dataset that builds pathway graphs per spot
-    """
-
-    def __init__(self,
-                 dataset, path, name, csv_file,
+    def __init__(self, dataset, path, name, csv_file,
                  prob_node_drop=0.5, pct_node_drop=0.15,
-                 prob_edge_perturb=0.5, pct_edge_perturb=0.15,
-                 img_size=112, train=True):
-        super().__init__()
+                 prob_edge_perturb=0.5, pct_edge_perturb=0.15, img_size=112, train=True):
 
         self.dataset = dataset
         self.train = train
 
-        # prebuild static pathway graphs once
-        self.processor = PathwayProcessor(csv_file)
-        self.processor.create_static_pathway_graphs()
-
-        
-        if dataset == "DLPFC":
+        # Load dataset
+        if dataset == "SpatialLIBD":
             adata = load_ST_file(os.path.join(path, name))
             adata.X = adata.X.A
             df_meta = pd.read_csv(os.path.join(path, name, 'metadata.tsv'), sep='\t')
-            self.label = pd.Categorical(df_meta['ground_truth']).codes
+            self.label = pd.Categorical(df_meta['layer_guess']).codes
             full_image = cv2.imread(os.path.join(path, name, f'{name}_full_image.tif'))
             full_image = cv2.cvtColor(full_image, cv2.COLOR_BGR2RGB)
             patches = []
-            for x, y in adata.obsm['spatial']:                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      
+            for x, y in adata.obsm['spatial']:
                 patches.append(full_image[y-img_size:y+img_size, x-img_size:x+img_size])
             patches = np.array(patches)
             self.image = patches
@@ -134,7 +110,6 @@ class Dataset(data.Dataset):
             adata = load_ST_file(os.path.join(path, name))
             adata.X = adata.X.A
             self.label = np.zeros(adata.shape[0], dtype=int)
-
             full_image = cv2.imread(os.path.join(path, name, f'{name}.tif'))
             full_image = cv2.cvtColor(full_image, cv2.COLOR_BGR2RGB)
             patches = []
@@ -143,21 +118,39 @@ class Dataset(data.Dataset):
             patches = np.array(patches)
             self.image = patches
 
+        elif dataset == "MBA":
+            adata = load_ST_file(os.path.join(path, name))
+            adata.X = adata.X.A
+            self.label = np.zeros(adata.shape[0], dtype=int)
+            full_image = cv2.imread(os.path.join(path, name, f'{name}.tif'))
+            full_image = cv2.cvtColor(full_image, cv2.COLOR_BGR2RGB)
+            patches = []
+            for x, y in adata.obsm['spatial']:
+                patches.append(full_image[y - img_size:y + img_size, x - img_size:x + img_size])
+            patches = np.array(patches)
+            self.image = patches
+
+        # Store gene expression as numpy array for fast indexing
+        if issparse(adata.X):
+            self.gene_expression = adata.X.toarray().astype(np.float32)
+        else:
+            self.gene_expression = np.asarray(adata.X, dtype=np.float32)
 
         self.n_clusters = self.label.max() + 1
         self.spatial = adata.obsm['spatial']
         self.n_pos = self.spatial.max() + 1
-        
-        self.gene = adata
-        self.gene = self.gene[self.label != -1]      
+
+        # Initialize pathway processor with gene list
+        self.all_genes_list = list(adata.var_names)
+        self.processor = PathwayProcessor(csv_file, self.all_genes_list)
+
+        # Filter out invalid samples
+        self.gene_expression = self.gene_expression[self.label != -1]
         self.image = self.image[self.label != -1]
+        self.spatial = self.spatial[self.label != -1]
         self.label = self.label[self.label != -1]
 
-        
-        expression_idx = list(self.gene.var_names)
-        self.symbol_to_index = {symbol: idx for idx, symbol in enumerate(expression_idx)}
-
-        # --- image augmentation ---
+        # Image transforms
         self.img_train_transform = transforms.Compose([
             Cutout(0.5),
             transforms.ToTensor(),
@@ -165,159 +158,114 @@ class Dataset(data.Dataset):
             transforms.RandomVerticalFlip(p=0.5),
             transforms.RandomApply([transforms.ColorJitter(0.4, 0.4, 0.4, 0.1)], p=0.8),
             transforms.RandomGrayscale(p=0.2),
-            transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+            transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
         ])
         self.img_test_transform = transforms.Compose([
             transforms.ToTensor(),
-            transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+            transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
         ])
 
-        # --- graph augmentation ---
-        self.graph_train_transform = GraphGeneTransforms(
-            prob_node_drop=prob_node_drop, pct_node_drop=pct_node_drop,
-            prob_edge_perturb=prob_edge_perturb, pct_edge_perturb=pct_edge_perturb
-        )
-
-    def update_graphs_with_expression(self, xg):
-        """
-        Build per-pathway graphs with node features.
-
-        :param xg: AnnData (1 x n_genes)
-        :return: dict {pathway_id: nx.Graph(with node['expression_data']: np.ndarray (1,)
-        """
-        updated_graphs = {}
-
-        #
-        X = xg.X
-        if issparse(X):
-            gene_matrix = X.toarray()
-        elif isinstance(X, np.ndarray):
-            gene_matrix = X
-        else:
-            
-            gene_matrix = getattr(X, "values", np.asarray(X))
-
-        gene_matrix = gene_matrix.astype(np.float32, copy=False)
-
-        # update each pathway graph
-        for sPathID, _ in self.processor.prebuilt_graphs.items():
-            g_upd = self.processor.update_graph_with_expression(
-                sPathID, gene_matrix, self.symbol_to_index
-            )
-            if g_upd:
-                updated_graphs[sPathID] = g_upd
-
-        return updated_graphs
-
-    def convert_graphs_to_tensor(self, graphs):
-        """
-        Convert pathway graphs into torch_geometric Data objects
-        """
-        pyg_list = []
-
-        for _, G in graphs.items():
-            node_indices = {node: i for i, node in enumerate(G.nodes())}
-
-            # edges -> [2, E]
-            if G.number_of_edges() > 0:
-                edges = [[node_indices[u], node_indices[v]] for u, v in G.edges()]
-                edge_index = torch.tensor(edges, dtype=torch.long).t().contiguous()
-            else:
-                edge_index = torch.empty((2, 0), dtype=torch.long)
-
-            # node features (expression_data) -> [N, 1]
-            feats = []
-            for node in G.nodes():
-                expr = G.nodes[node].get('expression_data', np.zeros(1)).reshape(-1, 1)
-                feats.append(expr)
-            node_features = torch.tensor(np.asarray(feats), dtype=torch.float).squeeze()
-            if node_features.dim() == 1:
-                node_features = node_features.unsqueeze(1)
-
-            pyg_list.append(Data(x=node_features, edge_index=edge_index))
-
-        return pyg_list
-
-    def __len__(self):
-        return len(self.label)
-
-    def __getitem__(self, idx):
-        """
-        Return:
-        graphs, graph augs, image augs, spatial, label, idx.
-        """
-        spatial = torch.from_numpy(self.spatial[idx])
-        y = int(self.label[idx])
-        xg_row = self.gene[idx] 
-
-        # per-spot pathway graphs
-        updated_graphs = self.update_graphs_with_expression(xg_row)
-        xg = self.convert_graphs_to_tensor(updated_graphs)
-
-        if self.train:
-            # graph augmentations
-            xg_u = [self.graph_train_transform(deepcopy(g)) for g in xg]
-            xg_v = [self.graph_train_transform(deepcopy(g)) for g in xg]
-
-            # image augmentations
-            xi_u = self.img_train_transform(self.image[idx])
-            xi_v = self.img_train_transform(self.image[idx])
-
-            return xg, xg_u, xg_v, xi_u, xi_v, spatial, y, idx
-
-        xi = self.img_test_transform(self.image[idx])
-        return xg, xi, spatial, y, idx
-
-class GraphGeneTransforms(nn.Module):
-    """
-    Graph-level data augmentations: node drop and edge perturbation
-    """
-
-    def __init__(self, prob_node_drop=0.5, pct_node_drop=0.15,
-                 prob_edge_perturb=0.5, pct_edge_perturb=0.15):
-        super(GraphGeneTransforms, self).__init__()
+        # Graph augmentation parameters
         self.prob_node_drop = prob_node_drop
         self.pct_node_drop = pct_node_drop
         self.prob_edge_perturb = prob_edge_perturb
         self.pct_edge_perturb = pct_edge_perturb
 
-    def forward(self, data):
+        print(f"Dataset initialized: {len(self.label)} samples, {len(self.all_genes_list)} genes, {self.processor.get_num_pathways()} pathways")
+
+    def _create_pathway_graphs(self, spot_expression):
         """
-        Apply node dropping and edge perturbation to input graph
+        Create PyG Data objects for all pathways using pre-computed structures.
+        This is called per sample but uses optimized numpy indexing.
         """
-        xg, edge_index = data.x, data.edge_index
+        pyg_data_objects = []
+
+        for i in range(self.processor.get_num_pathways()):
+            gene_indices = self.processor.pathway_gene_indices[i]
+            edge_index = self.processor.pathway_edge_indices[i]
+
+            if len(gene_indices) == 0:
+                continue
+
+            # Fast numpy indexing to extract pathway expression
+            pathway_expression = spot_expression[gene_indices]
+
+            # Create node features (each node is one gene with its expression value)
+            node_features = torch.from_numpy(pathway_expression).float().unsqueeze(1)
+
+            # Create PyG Data object
+            pyg_data_objects.append(Data(x=node_features, edge_index=edge_index))
+
+        return pyg_data_objects
+
+    def _augment_graph(self, data):
+        """Apply graph augmentation (node drop + edge perturbation)"""
+        xg = data.x
         num_nodes = xg.size(0)
+        edge_index = data.edge_index
 
-        # node dropping
-        if torch.rand(1) < self.prob_node_drop:
-            drop_num = int(num_nodes * self.pct_node_drop)
-            keep_indices = torch.randperm(num_nodes)[drop_num:]  # directly choose kept nodes
-            xg = xg[keep_indices]
+        # Node drop
+        if torch.rand(1) < self.prob_node_drop and num_nodes > 1:
+            drop_num = max(1, int(num_nodes * self.pct_node_drop))
+            keep_num = num_nodes - drop_num
+            keep_indices = torch.randperm(num_nodes)[:keep_num]
+            keep_indices_sorted, _ = torch.sort(keep_indices)
 
-            node_map = {old: new for new, old in enumerate(keep_indices.tolist())}
-            new_edges = [
-                (node_map[s.item()], node_map[d.item()])
-                for s, d in edge_index.t()
-                if s.item() in node_map and d.item() in node_map
-            ]
-            edge_index = (torch.tensor(new_edges, dtype=torch.long).t().contiguous()
-                          if new_edges else torch.empty((2, 0), dtype=torch.long))
-        else:
-            keep_indices = torch.arange(num_nodes)
+            xg = xg[keep_indices_sorted]
 
-        # edge perturbation
+            # Update edge_index
+            node_map = {old_idx.item(): new_idx for new_idx, old_idx in enumerate(keep_indices_sorted)}
+            new_edges = []
+            for src, dst in edge_index.t():
+                if src.item() in node_map and dst.item() in node_map:
+                    new_edges.append([node_map[src.item()], node_map[dst.item()]])
+
+            if new_edges:
+                edge_index = torch.tensor(new_edges, dtype=torch.long).t().contiguous()
+            else:
+                edge_index = torch.empty((2, 0), dtype=torch.long)
+
+            num_nodes = keep_num
+
+        # Edge perturbation
         if edge_index.size(1) > 0 and torch.rand(1) < self.prob_edge_perturb:
             edge_num = edge_index.size(1)
-            perturb_num = int(edge_num * self.pct_edge_perturb)
+            edge_perturb_num = max(1, int(edge_num * self.pct_edge_perturb))
 
-            # directly sample kept edges
-            kept_edges = torch.randperm(edge_num)[perturb_num:]
-            edge_index = edge_index[:, kept_edges]
+            # Remove some edges
+            keep_num = edge_num - edge_perturb_num
+            keep_edge_indices = torch.randperm(edge_num)[:keep_num]
+            edge_index = edge_index[:, keep_edge_indices]
 
-            # add random new edges
-            new_edges = torch.randint(0, len(keep_indices), (2, perturb_num))
-            edge_index = torch.cat([edge_index, new_edges], dim=1)
+            # Add random edges
+            if num_nodes > 1:
+                new_edges = torch.randint(0, num_nodes, (2, edge_perturb_num))
+                edge_index = torch.cat([edge_index, new_edges], dim=1)
 
-        data.x, data.edge_index = xg, edge_index
+        data.x = xg
+        data.edge_index = edge_index
         return data
 
+    def __len__(self):
+        return len(self.label)
+
+    def __getitem__(self, idx):
+        spatial = torch.from_numpy(self.spatial[idx])
+        y = self.label[idx]
+
+        # Fast indexing to get spot expression
+        spot_expression = self.gene_expression[idx]
+
+        # Create pathway graphs using optimized method
+        xg = self._create_pathway_graphs(spot_expression)
+
+        if self.train:
+            # Apply augmentations
+            xg_u = [self._augment_graph(graph.clone()) for graph in xg]
+            xg_v = [self._augment_graph(graph.clone()) for graph in xg]
+            xi_u = self.img_train_transform(self.image[idx])
+            xi_v = self.img_train_transform(self.image[idx])
+            return xg, xg_u, xg_v, xi_u, xi_v, spatial, y, idx
+        else:
+            xi = self.img_test_transform(self.image[idx])
+            return xg, xi, spatial, y, idx
