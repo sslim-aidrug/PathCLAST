@@ -5,10 +5,6 @@
        style="width:100%; max-width:800px; display:block; margin:auto; border:1px solid #ddd;">
 </p>
 
-<h2>Getting started</h2>
-<p>
-  See <a href="Her2ST_tutorial">Tutorials</a>.
-</p>
 <h2 class="requirements">Requirements</h2>
 Please ensure that all the libraries below are successfully installed:
 
@@ -58,3 +54,7 @@ Please ensure that all the libraries below are successfully installed:
   <pre><code id="code1">python train.py</code></pre>
 </div>
 </ul>
+<h2>Getting started</h2>
+<p>
+  See <a href="Her2ST_tutorial">Tutorials</a>.
+</p>
