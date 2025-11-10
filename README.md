@@ -1,4 +1,4 @@
-<h2 class="overview">PathCLAST Overview</h2>
+<h2 class="overview">Overview</h2>
 <p align="center">
   <img src="PathCLAST_overivew.png" 
        alt="PathCLAST Overview Diagram" 
@@ -56,5 +56,5 @@ Please ensure that all the libraries below are successfully installed:
 </ul>
 <h2>Getting started</h2>
 <p>
-  See <a href="Tutorial_Her2ST">Tutorials</a>
+  See <a href="Tutorial_Her2ST/tutorial_her2st.ipynb">Tutorials</a>
 </p>
