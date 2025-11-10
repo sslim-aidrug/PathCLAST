@@ -3,7 +3,7 @@ Please ensure that all the libraries below are successfully installed:
 
 <ul class="PathCLAST">
  <li>
-    <img src="/Users/nohminho/Downloads/PathCLAST_overview.pdf" 
+    <img src="/Users/nohminho/Desktop/overivew.png" 
          alt="PathCLAST Overview Diagram" 
          style="width:100%; max-width:800px; display:block; margin:auto; border:1px solid #ddd;">
  </li>
