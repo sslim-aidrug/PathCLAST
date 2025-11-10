@@ -1,10 +1,14 @@
 <h2 class="overview">PathCLAST Overview</h2>
 <p align="center">
-    <img src="PathCLAST_overivew.png" 
+  <img src="PathCLAST_overivew.png" 
        alt="PathCLAST Overview Diagram" 
        style="width:100%; max-width:800px; display:block; margin:auto; border:1px solid #ddd;">
 </p>
 
+<h2>Getting started</h2>
+<p>
+  See <a href="Her2ST_tutorial">Tutorials</a>.
+</p>
 <h2 class="requirements">Requirements</h2>
 Please ensure that all the libraries below are successfully installed:
 
@@ -45,7 +49,7 @@ Please ensure that all the libraries below are successfully installed:
   class="code-box"
   style="
     position: relative;
-    padding: 1em;     
+    padding: 1em;    nbsp;
     min-width: 300px;  
     background: #f5f5f5;
     border-radius: 4px;
