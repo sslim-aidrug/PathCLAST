@@ -16,6 +16,11 @@ Please ensure that all the libraries below are successfully installed:
 <ul class="Datasets">
   <li><a href="https://www.10xgenomics.com/datasets/human-breast-cancer-block-a-section-2-1-standard-1-1-0" target="_blank" rel="noopener">
   Human Breast Cancer Block A Section 1 (IDC)
+  </a></li>
+  </a></li>
+  <li><a href="https://cf.10xgenomics.com/samples/spatial-exp/1.3.0/Visium_FFPE_Human_Breast_Cancer/Visium_FFPE_Human_Breast_Cancer_web_summary.html" target="_blank" rel="noopener">
+  Human Breast Cancer Ductal Carcinoma (BCDC)
+</a></li>
 </a></li>
   <li><a href="https://github.com/almaan/her2st" target="_blank" rel="noopener">
   Human HER2-positive breast tumor (Her2ST)
