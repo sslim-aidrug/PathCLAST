@@ -56,5 +56,5 @@ Please ensure that all the libraries below are successfully installed:
 </ul>
 <h2>Getting started</h2>
 <p>
-  See <a href="Her2ST_tutorial">Tutorials</a>.
+  See <a href="Tutorial_Her2ST">Tutorials</a>
 </p>
