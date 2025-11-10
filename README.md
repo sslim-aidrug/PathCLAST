@@ -1,6 +1,13 @@
 <h2 class="requirements">Requirements</h2>
 Please ensure that all the libraries below are successfully installed:
 
+<ul class="PathCLAST">
+ <li>
+    <img src="/Users/nohminho/Downloads/PathCLAST_overview.pdf" 
+         alt="PathCLAST Overview Diagram" 
+         style="width:100%; max-width:800px; display:block; margin:auto; border:1px solid #ddd;">
+ </li>
+</ul>
 <ul class="requirements-list">
   <li>python == 3.9</li>
   <li>torch == 2.1.0</li>
