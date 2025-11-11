@@ -9,7 +9,7 @@
 Please ensure that all the libraries below are successfully installed:
 
 <ul class="requirements-list">
-  <p>python == 3.9</p>
+  <li>python == 3.9</li>
   <li>torch == 2.1.0</li>
   <li>CUDA == 12.1</li>
   <li>torchtoolbox == 0.1.8</li>
